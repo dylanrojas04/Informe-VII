@@ -1,0 +1,75 @@
+#CODIGO
+
+from machine import I2C, Pin
+import ssd1306
+from imu import MPU6050
+from time import sleep
+
+# ===== Configuración I2C =====
+i2c = I2C(0, scl=Pin(5), sda=Pin(4))
+oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+imu = MPU6050(i2c)
+
+# ===== Pin de salida =====
+tx_pin = Pin(15, Pin.OUT)
+
+# ===== Codificador Hamming (7,4) =====
+def hamming74_encode(bits4):
+    d3, d2, d1, d0 = bits4
+    P1 = d3 ^ d1 ^ d0
+    P2 = d3 ^ d2 ^ d0
+    P4 = d3 ^ d2 ^ d1
+    return [d3, d2, d1, P4, d0, P2, P1]
+
+# ===== Convierte un entero en lista de bits (MSB primero) =====
+def int_to_bits(value, nbits):
+    return [(value >> i) & 1 for i in range(nbits-1, -1, -1)]
+
+# ===== Envía lista de bits por el pin =====
+def send_bits(bits):
+    for b in bits:
+        tx_pin.value(b)
+        sleep(0.05)  # duración de cada bit
+
+while True:
+    # 1) Leer eje X (16 bits, entero)
+    ax_raw = int(imu.accel.x * 1000)  # escalar a entero
+    ax_raw &= 0xFFFF  # limitar a 16 bits
+
+    # 2) Convertir a 16 bits
+    bits16 = int_to_bits(ax_raw, 16)
+
+    # 3) Dividir en bloques de 4 bits (A=LSB ... D=MSB)
+    A = bits16[12:16]   # d3..d0
+    B = bits16[8:12]    # d7..d4
+    C = bits16[4:8]     # d11..d8
+    D = bits16[0:4]     # d15..d12
+
+    # 4) Codificar cada bloque en 7 bits
+    A_ = hamming74_encode(A)
+    B_ = hamming74_encode(B)
+    C_ = hamming74_encode(C)
+    D_ = hamming74_encode(D)
+
+    # 5) Concatenar en 28 bits (D′ C′ B′ A′)
+    code28 = D_ + C_ + B_ + A_
+
+    # 6) Mostrar en OLED con mejor separación
+    oled.fill(0)
+    oled.text("AX RAW:", 0, 0)
+    oled.text(str(ax_raw), 0, 10)
+
+    oled.text("16 bits:", 0, 25)
+    oled.text("".join(map(str, bits16[:8])), 0, 35)   # primera mitad
+    oled.text("".join(map(str, bits16[8:])), 0, 45)   # segunda mitad
+
+    oled.show()
+    sleep(1)
+
+    # 7) Mostrar 28 bits codificados en consola
+    print("ax:", ax_raw)
+    print("bits16:", bits16)
+    print("codificado (28b):", code28)
+
+    # 8) Enviar por pin
+    send_bits(code28)
